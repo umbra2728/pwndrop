@@ -19,7 +19,7 @@ type ApiResponse struct {
 var Cfg *config.Config = nil
 
 func SaveUploadedFile(file multipart.File, fhead *multipart.FileHeader, save_path string) error {
-	f, err := os.OpenFile(save_path, os.O_WRONLY|os.O_CREATE, 0644)
+	f, err := os.OpenFile(save_path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
@@ -43,9 +43,11 @@ func DumpResponse(w http.ResponseWriter, message string, http_status int, error_
 		http.Error(w, "corrupted response", http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http_status)
-	w.Header().Set("content-type", "application/json")
-	w.Write(d)
+	if _, err := w.Write(d); err != nil {
+		return
+	}
 }
 
 func SetConfig(cfg *config.Config) {

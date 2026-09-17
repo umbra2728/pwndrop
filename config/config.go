@@ -2,10 +2,13 @@ package config
 
 import (
 	"fmt"
-	"golang.org/x/crypto/bcrypt"
-	"gopkg.in/ini.v1"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+
+	"github.com/pelletier/go-toml"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/kgretzky/pwndrop/log"
 	"github.com/kgretzky/pwndrop/storage"
@@ -27,139 +30,171 @@ const (
 	INI_SETUP_SECRET_PATH  = "secret_path"
 )
 
+type serverConfig struct {
+	ListenIP  string `toml:"listen_ip"`
+	HTTPPort  int    `toml:"http_port"`
+	HTTPSPort int    `toml:"https_port"`
+	DataDir   string `toml:"data_dir"`
+	AdminDir  string `toml:"admin_dir"`
+}
+
+type setupConfig struct {
+	Username    string `toml:"username"`
+	Password    string `toml:"password"`
+	RedirectURL string `toml:"redirect_url"`
+	SecretPath  string `toml:"secret_path"`
+}
+
+type fileConfig struct {
+	Pwndrop serverConfig `toml:"pwndrop"`
+	Setup   *setupConfig `toml:"setup,omitempty"`
+}
+
 type Config struct {
-	ini      *ini.File
-	path     string
-	exec_dir string
+	file    fileConfig
+	path    string
+	execDir string
+	dirty   bool
 }
 
 func NewConfig(path string) (*Config, error) {
-	var err error
 	c := &Config{
-		path:     path,
-		exec_dir: utils.GetExecDir(),
+		path:    path,
+		execDir: utils.GetExecDir(),
+		file: fileConfig{Pwndrop: serverConfig{
+			ListenIP:  "",
+			HTTPPort:  80,
+			HTTPSPort: 443,
+			DataDir:   filepath.Join(utils.GetExecDir(), "data"),
+			AdminDir:  filepath.Join(utils.GetExecDir(), "admin"),
+		}},
 	}
 
-	data_dir := filepath.Join(c.exec_dir, "data")
-	admin_dir := filepath.Join(c.exec_dir, "admin")
-
-	defs := map[string]string{
-		INI_VAR_LISTEN_IP:  "",
-		INI_VAR_HTTP_PORT:  "80",
-		INI_VAR_HTTPS_PORT: "443",
-		INI_VAR_DATA_DIR:   data_dir,
-		INI_VAR_ADMIN_DIR:  admin_dir,
-	}
-
-	c.ini, err = ini.Load(path)
+	tree, err := toml.LoadFile(path)
 	if err != nil {
-		log.Warning("config file not found at path: %s", path)
-		c.ini = ini.Empty()
-	}
-
-	if _, err = c.ini.GetSection(INI_SERVER); err != nil {
-		c.ini.NewSection(INI_SERVER)
-	}
-
-	for k, v := range defs {
-		if _, err = c.ini.Section(INI_SERVER).GetKey(k); err != nil {
-			c.ini.Section(INI_SERVER).NewKey(k, v)
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read TOML config: %w", err)
 		}
+		log.Warning("config file not found at path: %s", path)
+		c.dirty = true
+		return c, nil
 	}
-
+	if err := tree.Unmarshal(&c.file); err != nil {
+		return nil, fmt.Errorf("parse TOML config: %w", err)
+	}
+	c.applyDefaults()
 	return c, nil
 }
 
+func (c *Config) applyDefaults() {
+	if c.file.Pwndrop.HTTPPort == 0 {
+		c.file.Pwndrop.HTTPPort = 80
+	}
+	if c.file.Pwndrop.DataDir == "" {
+		c.file.Pwndrop.DataDir = filepath.Join(c.execDir, "data")
+	}
+	if c.file.Pwndrop.AdminDir == "" {
+		c.file.Pwndrop.AdminDir = filepath.Join(c.execDir, "admin")
+	}
+}
+
+// HandleSetup applies one-time TOML bootstrap values, then environment values.
+// Environment credentials are never persisted to the TOML file and are only used
+// while there are no existing application users.
 func (c *Config) HandleSetup() error {
-	if _, err := c.ini.GetSection(INI_SETUP); err == nil {
-		o, err := storage.ConfigGet(1)
+	if c.file.Setup != nil {
+		if err := c.applySetup(*c.file.Setup); err != nil {
+			return err
+		}
+		c.file.Setup = nil
+		c.dirty = true
+	}
+
+	envSetup := setupConfig{
+		Username:    os.Getenv("PWN_DROP_SETUP_USERNAME"),
+		Password:    os.Getenv("PWN_DROP_SETUP_PASSWORD"),
+		RedirectURL: os.Getenv("PWN_DROP_SETUP_REDIRECT_URL"),
+		SecretPath:  os.Getenv("PWN_DROP_SETUP_SECRET_PATH"),
+	}
+	if envSetup.Username != "" || envSetup.Password != "" || envSetup.RedirectURL != "" || envSetup.SecretPath != "" {
+		users, err := storage.UserList()
 		if err != nil {
-			log.Error("config: can't get config from db")
+			return fmt.Errorf("list users for environment setup: %w", err)
 		}
-
-		var username, password, redirect_url, secret_path string
-
-		if k, err := c.ini.Section(INI_SETUP).GetKey(INI_SETUP_USERNAME); err == nil {
-			username = k.String()
-		}
-		if k, err := c.ini.Section(INI_SETUP).GetKey(INI_SETUP_PASSWORD); err == nil {
-			password = k.String()
-		}
-		if k, err := c.ini.Section(INI_SETUP).GetKey(INI_SETUP_REDIRECT_URL); err == nil {
-			redirect_url = k.String()
-			o.RedirectUrl = redirect_url
-			log.Important("setup: redirect url set to: %s", redirect_url)
-		}
-		if k, err := c.ini.Section(INI_SETUP).GetKey(INI_SETUP_SECRET_PATH); err == nil {
-			secret_path = k.String()
-			if secret_path[0] != '/' {
-				secret_path = "/" + secret_path
-			}
-			if len(secret_path) >= 2 {
-				o.CookieName = utils.GenRandomString(4)
-				o.CookieToken = utils.GenRandomHash()
-				o.SecretPath = secret_path
-				log.Important("setup: secret path set to: %s", secret_path)
+		if len(users) == 0 {
+			if err := c.applySetup(envSetup); err != nil {
+				return err
 			}
 		}
+	}
+	return nil
+}
 
-		if len(username) > 0 && len(password) > 0 {
-			phash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
-			if err == nil {
-				o := &storage.DbUser{
-					Name:     username,
-					Password: string(phash),
-				}
+func (c *Config) applySetup(setup setupConfig) error {
+	o, err := storage.ConfigGet(1)
+	if err != nil {
+		return fmt.Errorf("get database config: %w", err)
+	}
 
-				storage.UserDelete(1)
-				_, err = storage.UserCreate(o)
-				if err == nil {
-					log.Important("setup: created user account: %s", username)
-				} else {
-					log.Error("setup: failed to create user account: %s", err)
-				}
-				err = storage.SessionDeleteAll()
-				if err != nil {
-					log.Error("failed to delete active sessions: %s", err)
-				}
-			}
+	if setup.RedirectURL != "" {
+		o.RedirectUrl = setup.RedirectURL
+		log.Important("setup: redirect URL configured")
+	}
+	if setup.SecretPath != "" {
+		secretPath := setup.SecretPath
+		if !strings.HasPrefix(secretPath, "/") {
+			secretPath = "/" + secretPath
 		}
+		if len(secretPath) > 1 {
+			o.CookieName = utils.GenRandomString(4)
+			o.CookieToken = utils.GenRandomHash()
+			o.SecretPath = secretPath
+			log.Important("setup: secret path configured")
+		}
+	}
 
-		_, err = storage.ConfigUpdate(1, o)
+	users, err := storage.UserList()
+	if err != nil {
+		return fmt.Errorf("list users: %w", err)
+	}
+	if len(users) == 0 && setup.Username != "" && setup.Password != "" {
+		phash, err := bcrypt.GenerateFromPassword([]byte(setup.Password), bcrypt.DefaultCost)
 		if err != nil {
-			log.Error("config: can't save config to db")
+			return fmt.Errorf("hash setup password: %w", err)
 		}
+		if _, err := storage.UserCreate(&storage.DbUser{Name: setup.Username, Password: string(phash)}); err != nil {
+			return fmt.Errorf("create setup user: %w", err)
+		}
+		log.Important("setup: created initial administrator account")
+	}
 
-		c.ini.DeleteSection(INI_SETUP)
+	if _, err := storage.ConfigUpdate(1, o); err != nil {
+		return fmt.Errorf("save database config: %w", err)
 	}
 	return nil
 }
 
 func (c *Config) Save() error {
-	err := c.ini.SaveTo(c.path)
-	if err != nil {
-		return fmt.Errorf("failed to save config file")
+	if !c.dirty {
+		return nil
 	}
+	if err := os.MkdirAll(filepath.Dir(c.path), 0700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	encoded, err := toml.Marshal(c.file)
+	if err != nil {
+		return fmt.Errorf("encode TOML config: %w", err)
+	}
+	if err := os.WriteFile(c.path, encoded, 0600); err != nil {
+		return fmt.Errorf("save TOML config: %w", err)
+	}
+	c.dirty = false
 	return nil
 }
 
-func (c *Config) GetListenIP() string {
-	s, _ := c.Get(INI_VAR_LISTEN_IP)
-	return s
-}
-
-func (c *Config) GetHttpPort() int {
-	s, _ := c.Get(INI_VAR_HTTP_PORT)
-	port, _ := strconv.Atoi(s)
-	return port
-}
-
-func (c *Config) GetHttpsPort() int {
-	s, _ := c.Get(INI_VAR_HTTPS_PORT)
-	port, _ := strconv.Atoi(s)
-	return port
-}
-
+func (c *Config) GetListenIP() string { return c.file.Pwndrop.ListenIP }
+func (c *Config) GetHttpPort() int    { return c.file.Pwndrop.HTTPPort }
+func (c *Config) GetHttpsPort() int   { return c.file.Pwndrop.HTTPSPort }
 func (c *Config) GetSecretPath() string {
 	o, err := storage.ConfigGet(1)
 	if err != nil {
@@ -167,17 +202,8 @@ func (c *Config) GetSecretPath() string {
 	}
 	return o.SecretPath
 }
-
-func (c *Config) GetDataDir() string {
-	dir, _ := c.Get(INI_VAR_DATA_DIR)
-	return c.joinPath(c.exec_dir, dir)
-}
-
-func (c *Config) GetAdminDir() string {
-	dir, _ := c.Get(INI_VAR_ADMIN_DIR)
-	return c.joinPath(c.exec_dir, dir)
-}
-
+func (c *Config) GetDataDir() string  { return c.joinPath(c.execDir, c.file.Pwndrop.DataDir) }
+func (c *Config) GetAdminDir() string { return c.joinPath(c.execDir, c.file.Pwndrop.AdminDir) }
 func (c *Config) GetCookieName() string {
 	o, err := storage.ConfigGet(1)
 	if err != nil {
@@ -185,7 +211,6 @@ func (c *Config) GetCookieName() string {
 	}
 	return o.CookieName
 }
-
 func (c *Config) GetCookieToken() string {
 	o, err := storage.ConfigGet(1)
 	if err != nil {
@@ -193,7 +218,6 @@ func (c *Config) GetCookieToken() string {
 	}
 	return o.CookieToken
 }
-
 func (c *Config) GetRedirectUrl() string {
 	o, err := storage.ConfigGet(1)
 	if err != nil {
@@ -203,39 +227,52 @@ func (c *Config) GetRedirectUrl() string {
 }
 
 func (c *Config) Get(key string) (string, error) {
-	section, err := c.ini.GetSection(INI_SERVER)
-	if err != nil {
-		return "", err
+	switch key {
+	case INI_VAR_LISTEN_IP:
+		return c.file.Pwndrop.ListenIP, nil
+	case INI_VAR_HTTP_PORT:
+		return strconv.Itoa(c.file.Pwndrop.HTTPPort), nil
+	case INI_VAR_HTTPS_PORT:
+		return strconv.Itoa(c.file.Pwndrop.HTTPSPort), nil
+	case INI_VAR_DATA_DIR:
+		return c.file.Pwndrop.DataDir, nil
+	case INI_VAR_ADMIN_DIR:
+		return c.file.Pwndrop.AdminDir, nil
+	default:
+		return "", fmt.Errorf("config key %q not found", key)
 	}
-	if section.HasKey(key) {
-		return section.Key(key).String(), nil
-	}
-	return "", fmt.Errorf("config key '%s' not found", key)
 }
 
 func (c *Config) Set(key string, value string) error {
-	section, err := c.ini.GetSection(INI_SERVER)
-	if err != nil {
-		return err
+	switch key {
+	case INI_VAR_LISTEN_IP:
+		c.file.Pwndrop.ListenIP = value
+	case INI_VAR_HTTP_PORT:
+		port, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid HTTP port: %w", err)
+		}
+		c.file.Pwndrop.HTTPPort = port
+	case INI_VAR_HTTPS_PORT:
+		port, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid HTTPS port: %w", err)
+		}
+		c.file.Pwndrop.HTTPSPort = port
+	case INI_VAR_DATA_DIR:
+		c.file.Pwndrop.DataDir = value
+	case INI_VAR_ADMIN_DIR:
+		c.file.Pwndrop.AdminDir = value
+	default:
+		return fmt.Errorf("config key %q not found", key)
 	}
-	if section.HasKey(key) {
-		section.Key(key).SetValue(value)
-	} else {
-		section.NewKey(key, value)
-	}
-	err = c.ini.SaveTo(c.path)
-	if err != nil {
-		return err
-	}
-	return nil
+	c.dirty = true
+	return c.Save()
 }
 
-func (c *Config) joinPath(base_path string, rel_path string) string {
-	var ret string
-	if filepath.IsAbs(rel_path) {
-		ret = rel_path
-	} else {
-		ret = filepath.Join(base_path, rel_path)
+func (c *Config) joinPath(basePath string, relPath string) string {
+	if filepath.IsAbs(relPath) {
+		return relPath
 	}
-	return ret
+	return filepath.Join(basePath, relPath)
 }

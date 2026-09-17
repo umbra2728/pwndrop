@@ -42,56 +42,44 @@ func NewServer(host string, port_plain int, port_tls int, enable_letsencrypt boo
 		bl_mtx:    sync.Mutex{},
 	}
 
-	hostname := fmt.Sprintf("%s:%d", host, port_plain)
-	hostname_tls := fmt.Sprintf("%s:%d", host, port_tls)
-
-	s.cdb, err = NewCertDb(Cfg.GetDataDir())
-	if err != nil {
-		return nil, err
+	if port_plain <= 0 {
+		return nil, fmt.Errorf("HTTP port must be greater than zero")
 	}
+	hostname := fmt.Sprintf("%s:%d", host, port_plain)
+	var hostnameTLS string
+	var tlsCfg *tls.Config
 
-	cert, err := LoadTLSCertificate(filepath.Join(Cfg.GetDataDir(), "public.crt"), filepath.Join(Cfg.GetDataDir(), "private.key"))
-	if err != nil {
-		log.Warning("certificate: %s", err)
-		cert, err = GenerateTLSCertificate(host)
+	if port_tls > 0 {
+		hostnameTLS = fmt.Sprintf("%s:%d", host, port_tls)
+		s.cdb, err = NewCertDb(Cfg.GetDataDir())
 		if err != nil {
 			return nil, err
 		}
-		log.Info("generated self-signed certificate")
-	} else {
-		log.Info("using TLS certificate from data directory")
-		enable_letsencrypt = false
-	}
 
-	tls_cfg := &tls.Config{}
-	tls_cfg.Certificates = append(tls_cfg.Certificates, *cert)
-	if enable_letsencrypt {
-		log.Info("autocert: enabled")
-		tls_cfg.GetCertificate = s.cdb.AutocertMgr.GetCertificate
-		tls_cfg.NextProtos = []string{
-			"h2", "http/1.1", // enable HTTP/2
-			acme.ALPNProto, // enable tls-alpn ACME challenges
+		cert, err := LoadTLSCertificate(filepath.Join(Cfg.GetDataDir(), "public.crt"), filepath.Join(Cfg.GetDataDir(), "private.key"))
+		if err != nil {
+			log.Warning("certificate: %s", err)
+			cert, err = GenerateTLSCertificate(host)
+			if err != nil {
+				return nil, err
+			}
+			log.Info("generated self-signed certificate")
+		} else {
+			log.Info("using TLS certificate from data directory")
+			enable_letsencrypt = false
+		}
+
+		tlsCfg = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{*cert}}
+		if enable_letsencrypt {
+			log.Info("autocert: enabled")
+			tlsCfg.GetCertificate = s.cdb.AutocertMgr.GetCertificate
+			tlsCfg.NextProtos = []string{"h2", "http/1.1", acme.ALPNProto}
+		} else {
+			log.Info("autocert: disabled")
 		}
 	} else {
-		log.Info("autocert: disabled")
+		log.Info("HTTPS listener disabled")
 	}
-
-	// set up modern cipher suites
-	/*
-		tls_cfg.MinVersion = tls.VersionTLS12
-		tls_cfg.CipherSuites = []uint16{
-			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305, // Go 1.8 only
-			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,   // Go 1.8 only
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-
-			// Best disabled, as they don't provide Forward Secrecy,
-			// but might be necessary for some clients
-			// tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-			// tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
-		}*/
 
 	s.wdav, err = NewWebDav(s)
 	if err != nil {
@@ -105,17 +93,20 @@ func NewServer(host string, port_plain int, port_tls int, enable_letsencrypt boo
 	s.setupRouter()
 
 	s.srv = &http.Server{
-		Handler:      http.Handler(s),
-		Addr:         hostname,
-		WriteTimeout: 0,
-		ReadTimeout:  0,
-		IdleTimeout:  5 * time.Second,
-		TLSConfig:    tls_cfg,
+		Handler:           http.Handler(s),
+		Addr:              hostname,
+		WriteTimeout:      0,
+		ReadTimeout:       0,
+		IdleTimeout:       5 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig:         tlsCfg,
 	}
 
-	s.listenTLS, err = tls.Listen("tcp", hostname_tls, tls_cfg)
-	if err != nil {
-		return nil, err
+	if tlsCfg != nil {
+		s.listenTLS, err = tls.Listen("tcp", hostnameTLS, tlsCfg)
+		if err != nil {
+			return nil, err
+		}
 	}
 	s.listen, err = net.Listen("tcp", hostname)
 	if err != nil {
@@ -123,7 +114,9 @@ func NewServer(host string, port_plain int, port_tls int, enable_letsencrypt boo
 	}
 
 	log.Info("starting HTTP/WebDAV server at %s", hostname)
-	log.Info("starting HTTPS server at %s", hostname_tls)
+	if s.listenTLS != nil {
+		log.Info("starting HTTPS server at %s", hostnameTLS)
+	}
 
 	if enable_dns {
 		s.ns, err = NewNameserver(ch_exit)
@@ -140,18 +133,32 @@ func NewServer(host string, port_plain int, port_tls int, enable_letsencrypt boo
 		}
 	}()
 
-	go func() {
-		err := s.srv.Serve(s.listenTLS)
-		if err != nil {
-			log.Fatal("failed to start HTTPS server at %s", hostname_tls)
-			*ch_exit <- false
-		}
-	}()
+	if s.listenTLS != nil {
+		go func() {
+			err := s.srv.Serve(s.listenTLS)
+			if err != nil {
+				log.Fatal("failed to start HTTPS server at %s", hostnameTLS)
+				*ch_exit <- false
+			}
+		}()
+	}
 
 	return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/healthz" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("ok\n")); err != nil {
+			log.Debug("healthcheck response: %s", err)
+		}
+		return
+	}
+
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	log.Debug("%s %s", r.Method, r.URL.Path)
 
 	from_ip := r.RemoteAddr

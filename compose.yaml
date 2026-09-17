@@ -1,0 +1,44 @@
+services:
+  pwndrop:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pwndrop:local
+    container_name: pwndrop
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - pwndrop-data:/data
+      - ./config.toml:/config/config.toml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    # The root entrypoint initializes the volume, then drops to UID 10001.
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - /bin/busybox
+        - wget
+        - -q
+        - -O
+        - "-"
+        - http://127.0.0.1:8080/healthz
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  pwndrop-data:
+    name: pwndrop-data

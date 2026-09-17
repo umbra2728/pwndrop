@@ -19,6 +19,7 @@ require (
 	github.com/mattn/go-isatty v0.0.7 // indirect
 	github.com/miekg/dns v1.1.12
 	github.com/otiai10/copy v1.0.2
+	github.com/pelletier/go-toml v1.9.5
 	github.com/shirou/gopsutil v2.19.12+incompatible
 	github.com/smartystreets/goconvey v0.0.0-20190330032615-68dc04aab96a // indirect
 	github.com/stretchr/testify v1.3.0 // indirect

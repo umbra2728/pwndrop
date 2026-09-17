@@ -1,160 +1,117 @@
-<p align="center">
-  <img alt="pwndrop logo" src="https://raw.githubusercontent.com/kgretzky/pwndrop/master/media/pwndrop-logo-512.png" height="120" />
-  <p align="center">
-    <img alt="pwndrop title" src="https://raw.githubusercontent.com/kgretzky/pwndrop/master/media/pwndrop-title-black-512.png" height="40" />
-  </p>
-</p>
+# Pwndrop
 
-**pwndrop** is a self-deployable file hosting service for sending out red teaming payloads or securely sharing your private files over HTTP and WebDAV.
+Pwndrop is a self-hosted file-sharing service with a small web admin panel and
+HTTP/WebDAV delivery. This fork packages the application for a predictable,
+single-port Docker Compose deployment.
 
-If you've ever needed to quickly set up an nginx/apache web server to host your files and you were never happy with the limitations of `python -m SimpleHTTPServer`, **pwndrop** is definitely for you!
+> Use only for files and infrastructure you are authorized to host and test.
 
-<p align="center">
-  <img alt="demo" src="https://raw.githubusercontent.com/kgretzky/pwndrop/master/media/demo1.gif" height="500" />
-</p>
+## What this fork changes
 
-With **pwndrop** you can:
-- [x] Upload and immediately share multiple files using your own private VPS, using drag & drop.
-- [x] Decide to make files available or unavailable for download with a single click.
-- [x] Set up custom download URLs, for shared files, without playing with directory structure.
-- [x] Set up facade files, which will be served instead of the original file whenever you feel like it.
-- [x] Set up automatic redirects to spoof the file's extension in a shared link.
-- [x] Change MIME type of the served file to change browser's behavior when a download link is clicked.
-- [x] Serve files over HTTP, HTTPS and WebDAV.
-- [x] Install and setup everything using a bash oneliner.
-- [x] Set up **pwndrop** to work as a nameserver and respond with a valid DNS A record to any sub-domain you choose.
-- [x] Protect your admin panel behind a custom secret URL path and log in securely with your own username and password.
-- [x] Never worry about setting up HTTPS certificates as **pwndrop** does everything for you in the background (including auto-renewals).
+- Docker multi-stage build with a minimal runtime image.
+- Docker Compose deployment exposing **only HTTP port 8080**.
+- Persistent application data in the named `pwndrop-data` Docker volume.
+- A readable `config.toml` runtime configuration instead of `pwndrop.ini`.
+- `make init` creates a private `.env` with a random administrator password and
+  secret admin URL. Secrets are not committed.
+- Container healthcheck at `/healthz`, read-only root filesystem, dropped Linux
+  capabilities, `no-new-privileges`, and a non-root application user.
+- TLS and DNS are deliberately disabled in the supplied Compose deployment.
+  Put a reverse proxy in front when HTTPS or a public domain is required.
 
-Its main goal is to make file sharing as easy and intuitive as possible, while implementing extra features to aid in red team assessments.
+## Quick start
 
-Frontend of **pwndrop** is developed in pure Vue.js + Bootstrap with no npm or webpack dependencies. The backend serves REST API and manages a local database, powered by GO language.
+Prerequisites: Docker Engine with Docker Compose v2, `make`, and `openssl`.
 
-## Write-up
-
-If you want to learn how to use **pwndrop** or you want to learn what new features were implemented in recent releases, make sure to check out the posts on my blog:
-
-https://breakdev.org/pwndrop
-
-## Video guide
-
-Take a look at the fantastic video made by Luke Turvey ([@TurvSec](https://twitter.com/TurvSec)), which fully explains how to get started using **pwndrop**.
-
-[![File and Phishing Payload Hosting using PwnDrop (Red Team) - Luke Turvey](https://img.youtube.com/vi/e3veSyIFvOE/0.jpg)](https://www.youtube.com/watch?v=e3veSyIFvOE)
-
-## Prerequisites
-
-If you don't yet have the server to deploy to I highly recommend Digital Ocean. The cheapest $5/mo Debian 9 server with 25GB of storage space will work wonders for you. You can use my referral link to [get an extra $100 to spend on your servers in 60 days for free](https://m.do.co/c/50338abc7ffe).
-
-Register a new domain and point its DNS A records to your VPS IP. You can also register a domain and point its `ns1` and `ns2` nameservers to **pwndrop** instance IP - it will automatically respond with valid DNS A replies.
-
-1. Registered domain name pointing to **pwndrop** instance IP as a DNS A records or as a nameserver.
-2. Server with at least 512 MB RAM.
-
-If you want to set up **pwndrop** without a domain, check below how to set up a local instance, which will not auto-generate HTTPS certificates.
-
-## Installation
-
-Make sure there aren't any DNS or HTTP(S) servers running before you attempt to install **pwndrop**.
-
-#### Oneliner
-
-I do not recommend running oneliners, before downloading and checking the script code, but if you are really in a hurry, here it is:
-```
-curl https://raw.githubusercontent.com/kgretzky/pwndrop/master/install_linux.sh | sudo bash
-```
-
-This will download the latest amd64 release binary and fully install a daemon running in a background.
-
-#### From binary
-
-First you need to download the release package you want from: https://github.com/kgretzky/pwndrop/releases
-
-Then do the following (this performs same actions to the oneliner):
-
-```
-tar zxvf pwndrop-linux-amd64.tar.gz
-./pwndrop stop
-./pwndrop install
-./pwndrop start
-./pwndrop status
-```
-
-#### From source code
-
-First of all, make sure you have installed GO with version at least **1.13**: https://golang.org/doc/install
-
-Then do the following:
-
-```
-sudo apt-get -y install git make
-git clone https://github.com/kgretzky/pwndrop
+```sh
+git clone https://github.com/umbra2728/pwndrop.git
 cd pwndrop
-make
-make install
+make init
+make up
 ```
 
-## Quickstart
+`make init` prints the generated administrator password and secret admin path
+once, and stores them in `.env` with mode `0600`. Save those values in a secure
+password manager. Then open:
 
-Make sure the **pwndrop** is running.
-
-1. Open the secret URL to authorize your browser: `https://yourdomain.com/pwndrop` (this is a default value; make sure to use the secret path, you've pre-configured)
-2. Open the admin panel URL in your browser: `https://yourdomain.com/` (since you've authorized your browser, you will now see an admin panel login page)
-3. Create your admin account or login.
-4. Click the configuration cog in top-left corner and make sure you change the secret path to something other than `/pwndrop`.
-
-You're good to go!
-
-## Running from CLI
-
-You don't have to install **pwndrop** as a daemon and you can run it straight from the console.
-
+```text
+http://SERVER_HOST:8080/<secret-admin-path>
 ```
-usage: pwndrop [start|stop|install|remove|status] [-config <config_path>] [-debug] [-no-autocert] [-no-dns] [-h]
 
-daemon management:
-    start           : start the daemon
-    stop            : stop the daemon
-    install         : install the daemon using the available system manager (systemd, systemv and upstart supported)
-    remove          : uninstall the daemon
-    status          : check status of the installed daemon
+The first visit to that secret path grants access to the login screen. Sign in
+with the generated credentials.
 
-parameters:
-    -config         : specify a custom path to a config file (def. 'pwndrop.ini' in same directory as the executable)
-    -debug          : enable debug output 
-    -no-autocert    : disable automatic TLS certificate retrieval from LetsEncrypt; useful when you want to connect over IP or/and in a local network
-    -no-dns         : do not run a DNS server on port 53 UDP; use this if you don't want to use pwndrop as a nameserver
-    -h              : usage help
+Useful commands:
+
+```sh
+make logs          # follow service logs
+make down          # stop the service
+make config-check  # validate Compose interpolation and structure
+make test          # run Go tests
 ```
 
 ## Configuration
 
-On first launch, **pwndrop**, by default, will create a new configuration file `pwndrop.ini` in the same directory as an executable. You can later modify it or supply your own, for example to pre-configure **pwndrop** before the installation to automate the deployment of a tool even better.
+`make init` creates two local files:
 
-Here is an example config file with all available config variables with commentary:
-```
+| File | Purpose | Commit it? |
+| --- | --- | --- |
+| `config.toml` | Network, paths, and listener configuration | No; use `config.example.toml` as the template |
+| `.env` | Initial administrator credentials and secret path | **Never** |
+
+The supplied `config.toml` uses:
+
+```toml
 [pwndrop]
-listen_ip = "190.33.86.22"                  # the external IP of your pwndrop instance (must be set if you want to use the nameserver feature)
-http_port = 80                              # listening port for HTTP and WebDAV
-https_port = 443                            # listening port for HTTPS
-data_dir = "./data"                         # directory path where data storage will reside (relative paths are from executable directory path)
-admin_dir = "./admin"                       # directory path where the admin panel files reside (relative paths are from executable directory path)
-
-[setup]                                     # optional: put in if you want to pre-configure pwndrop (section will be deleted from the config file on first run)
-username = "admin"                          # username of the admin account
-password = "secretpassword"                 # password of the admin account
-redirect_url = "https://www.somedomain.com" # URL to which visitors will be redirected to if they supply a path, which doesn't point to any shared file (put blank if you want to return 404)
-secret_path = "/pwndrop"                    # secret URL path, which upon visiting will allow your browser to access the login page of the admin panel (make sure to change the default value)
+listen_ip = "0.0.0.0"
+http_port = 8080
+https_port = 0
+data_dir = "/data"
+admin_dir = "/app/admin"
 ```
 
-If you want to pre-configure your **pwndrop** instance before deployment using any of the installation scripts, put your configuration file at `/usr/local/pwndrop/pwndrop.ini` and it will be parsed the moment **pwndrop** daemon is first executed.
+The environment values `PWN_DROP_SETUP_*` are bootstrap-only: they are applied
+only when the data volume has no administrator account. This prevents a
+container restart from rotating the secret path or resetting a password.
 
-## Credits
+### HTTPS and public access
 
-Huge thanks to [**@jaredhaight**](https://twitter.com/jaredhaight) for inspiring me to learn Vue, with his [Faction C2](https://www.factionc2.com/) framework!
+This Compose stack owns only port `8080` and serves plain HTTP. Terminate TLS
+in an external reverse proxy (Traefik, Caddy, Nginx, etc.) and proxy requests to
+`http://HOST:8080`. Do not expose the Pwndrop port directly to the Internet
+unless you explicitly accept plaintext HTTP.
 
-Also much thanks to all the people who gave me pre-release feedback and supported me with their opinions on the tool!
+The old built-in DNS server and automatic ACME/Let's Encrypt mode remain in the
+application for manual deployments, but are off in this Compose setup.
 
-## License
+## Data and backups
 
-**pwndrop** is made by Kuba Gretzky ([@mrgretzky](https://twitter.com/mrgretzky)) and it's released under GPL3 license.
+All uploads, the BoltDB database, and any certificates used by a manual setup
+are stored in the `pwndrop-data` Docker volume. Back it up before upgrades:
+
+```sh
+docker run --rm \
+  -v pwndrop-data:/data:ro \
+  -v "$PWD":/backup \
+  alpine tar czf /backup/pwndrop-data-backup.tgz -C /data .
+```
+
+To reset the instance completely, stop the stack, remove `pwndrop-data`, and
+run `make init` again after deliberately removing the local `.env` and
+`config.toml` files. This permanently deletes all uploaded files and accounts.
+
+## Development
+
+```sh
+make build
+make test
+```
+
+The backend is Go and the browser UI is vendored Vue/Bootstrap assets under
+`www/`; no Node.js build step is required. Go dependencies are vendored, so the
+normal build uses `-mod=vendor`.
+
+## Original project and license
+
+This is a private derivative of [kgretzky/pwndrop](https://github.com/kgretzky/pwndrop).
+The original project is licensed under GPL-3.0; see [LICENSE](LICENSE).

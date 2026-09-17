@@ -24,6 +24,8 @@ github.com/mattn/go-isatty
 github.com/miekg/dns
 # github.com/otiai10/copy v1.0.2
 github.com/otiai10/copy
+# github.com/pelletier/go-toml v1.9.5
+github.com/pelletier/go-toml
 # github.com/shirou/gopsutil v2.19.12+incompatible
 github.com/shirou/gopsutil/disk
 github.com/shirou/gopsutil/internal/common

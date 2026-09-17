@@ -1,5 +1,11 @@
-build/pwndrop
-build/pwndrop.exe
-build/data/
+# Local build artifacts
 build/
+pwndrop
+pwndrop.exe
 release/
+
+# Local deployment state, generated secrets, and Pi task artifacts
+.env
+config.toml
+data/
+.pi/

@@ -1,0 +1,10 @@
+.git
+.github
+.pi
+.env
+config.toml
+build
+release
+pwndrop
+pwndrop.exe
+*.tgz

@@ -78,7 +78,7 @@ func main() {
 		return
 	}
 	if *cfg_path == "" {
-		*cfg_path = utils.ExecPath("pwndrop.ini")
+		*cfg_path = utils.ExecPath("config.toml")
 	}
 
 	log.Info("pwndrop version: %s", config.Version)
@@ -98,8 +98,14 @@ func main() {
 	db_path := filepath.Join(core.Cfg.GetDataDir(), "pwndrop.db")
 	log.Info("opening database at: %s", db_path)
 
-	storage.Open(db_path)
-	core.Cfg.HandleSetup()
+	if err = storage.Open(db_path); err != nil {
+		log.Fatal("storage: %v", err)
+		return
+	}
+	if err = core.Cfg.HandleSetup(); err != nil {
+		log.Fatal("setup: %v", err)
+		return
+	}
 	if err = core.Cfg.Save(); err != nil {
 		log.Fatal("config: %v", err)
 		os.Exit(1)
