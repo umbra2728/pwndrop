@@ -11,7 +11,6 @@ import (
 	"github.com/kgretzky/pwndrop/core"
 	"github.com/kgretzky/pwndrop/log"
 	"github.com/kgretzky/pwndrop/storage"
-	"github.com/kgretzky/pwndrop/utils"
 
 	"github.com/kgretzky/daemon"
 )
@@ -19,14 +18,13 @@ import (
 const SERVICE_NAME = "pwndrop"
 const SERVICE_DESCRIPTION = "pwndrop"
 
-var cfg_path = flag.String("config", "", "config file path")
 var debug_log = flag.Bool("debug", false, "log debug output")
 var disable_autocert = flag.Bool("no-autocert", false, "disable automatic certificate retrieval")
 var disable_dns = flag.Bool("no-dns", false, "disable DNS nameserver")
 var show_help = flag.Bool("h", false, "show help")
 
 func usage() {
-	fmt.Printf("usage: pwndrop [start|stop|install|remove|status] [-config <config_path>] [-debug] [-no-autocert] [-no-dns] [-h]\n\n")
+	fmt.Printf("usage: pwndrop [start|stop|install|remove|status] [-debug] [-no-autocert] [-no-dns] [-h]\n\n")
 }
 
 func main() {
@@ -77,13 +75,9 @@ func main() {
 		usage()
 		return
 	}
-	if *cfg_path == "" {
-		*cfg_path = utils.ExecPath("config.toml")
-	}
-
 	log.Info("pwndrop version: %s", config.Version)
 
-	core.Cfg, err = config.NewConfig(*cfg_path)
+	core.Cfg, err = config.NewConfig()
 	if err != nil {
 		log.Fatal("config: %v", err)
 		os.Exit(1)
@@ -106,12 +100,6 @@ func main() {
 		log.Fatal("setup: %v", err)
 		return
 	}
-	if err = core.Cfg.Save(); err != nil {
-		log.Fatal("config: %v", err)
-		os.Exit(1)
-		return
-	}
-
 	listen_ip := core.Cfg.GetListenIP()
 	log.Debug("listen_ip: %s", listen_ip)
 	port_http := core.Cfg.GetHttpPort()

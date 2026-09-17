@@ -20,4 +20,4 @@ COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["-config", "/config/config.toml", "-no-autocert", "-no-dns"]
+CMD ["-no-autocert", "-no-dns"]

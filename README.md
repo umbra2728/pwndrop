@@ -1,23 +1,9 @@
 # Pwndrop
 
 Pwndrop is a self-hosted file-sharing service with a small web admin panel and
-HTTP/WebDAV delivery. This fork packages the application for a predictable,
-single-port Docker Compose deployment.
+HTTP/WebDAV delivery. This fork provides a single-port Docker Compose deployment.
 
-> Use only for files and infrastructure you are authorized to host and test.
-
-## What this fork changes
-
-- Docker multi-stage build with a minimal runtime image.
-- Docker Compose deployment exposing **only HTTP port 8080**.
-- Persistent application data in the named `pwndrop-data` Docker volume.
-- A readable `config.toml` runtime configuration instead of `pwndrop.ini`.
-- `make init` creates a private `.env` with a random administrator password and
-  secret admin URL. Secrets are not committed.
-- Container healthcheck at `/healthz`, read-only root filesystem, dropped Linux
-  capabilities, `no-new-privileges`, and a non-root application user.
-- TLS and DNS are deliberately disabled in the supplied Compose deployment.
-  Put a reverse proxy in front when HTTPS or a public domain is required.
+> Use it only for files and infrastructure you are authorized to host and test.
 
 ## Quick start
 
@@ -30,64 +16,73 @@ make init
 make up
 ```
 
-`make init` prints the generated administrator password and secret admin path
-once, and stores them in `.env` with mode `0600`. Save those values in a secure
-password manager. Then open:
+`make init` creates **one file only**: `.env`. It contains every runtime
+setting plus a random admin password and secret admin URL, and is created with
+mode `0600`. Save the generated credentials in a password manager.
+
+Open the secret URL printed by `make init`:
 
 ```text
-http://SERVER_HOST:8080/<secret-admin-path>
+http://SERVER_HOST:PORT/<secret-admin-path>
 ```
 
-The first visit to that secret path grants access to the login screen. Sign in
-with the generated credentials.
+Then sign in with the generated administrator credentials.
 
 Useful commands:
 
 ```sh
 make logs          # follow service logs
 make down          # stop the service
-make config-check  # validate Compose interpolation and structure
+make config-check  # validate Compose configuration
 make test          # run Go tests
 ```
 
-## Configuration
+## Configuration: `.env` only
 
-`make init` creates two local files:
+There is no TOML, INI, or mounted configuration file. Copy `.env.example` or
+run `make init`, then edit `.env` before starting the service.
 
-| File | Purpose | Commit it? |
-| --- | --- | --- |
-| `config.toml` | Network, paths, and listener configuration | No; use `config.example.toml` as the template |
-| `.env` | Initial administrator credentials and secret path | **Never** |
+```dotenv
+# The host and container port are both controlled by this one value.
+PWN_DROP_HTTP_PORT=8080
 
-The supplied `config.toml` uses:
+# The Compose deployment is HTTP-only. TLS belongs to your reverse proxy.
+PWN_DROP_HTTPS_PORT=0
 
-```toml
-[pwndrop]
-listen_ip = "0.0.0.0"
-http_port = 8080
-https_port = 0
-data_dir = "/data"
-admin_dir = "/app/admin"
+# Persistent data volume and bundled UI paths.
+PWN_DROP_DATA_DIR=/data
+PWN_DROP_ADMIN_DIR=/app/admin
 ```
 
-The environment values `PWN_DROP_SETUP_*` are bootstrap-only: they are applied
-only when the data volume has no administrator account. This prevents a
-container restart from rotating the secret path or resetting a password.
+`compose.yaml` publishes exactly this mapping:
 
-### HTTPS and public access
+```yaml
+ports:
+  - "${PWN_DROP_HTTP_PORT}:${PWN_DROP_HTTP_PORT}"
+```
 
-This Compose stack owns only port `8080` and serves plain HTTP. Terminate TLS
-in an external reverse proxy (Traefik, Caddy, Nginx, etc.) and proxy requests to
-`http://HOST:8080`. Do not expose the Pwndrop port directly to the Internet
-unless you explicitly accept plaintext HTTP.
+For example, set `PWN_DROP_HTTP_PORT=8095`, run `make up`, and the app listens
+and is published at `http://HOST:8095`.
 
-The old built-in DNS server and automatic ACME/Let's Encrypt mode remain in the
-application for manual deployments, but are off in this Compose setup.
+The `PWN_DROP_SETUP_*` values initialize the first administrator account and
+secret path only when the data volume has no users. They cannot reset a running
+instance just because it restarts.
+
+## Networking and security
+
+The Compose stack deliberately owns only the configured HTTP port. TLS, public
+domains, DNS, and certificate management are outside Pwndrop's responsibility.
+Place Traefik, Caddy, Nginx, or another reverse proxy in front when HTTPS is
+needed. Do not expose plain HTTP directly to the Internet unless that is an
+intentional choice.
+
+The container uses a named `pwndrop-data` volume, a read-only root filesystem,
+a health endpoint at `/healthz`, a non-root application user, and dropped Linux
+capabilities after startup.
 
 ## Data and backups
 
-All uploads, the BoltDB database, and any certificates used by a manual setup
-are stored in the `pwndrop-data` Docker volume. Back it up before upgrades:
+Uploads and the BoltDB database are in the `pwndrop-data` volume. Back it up:
 
 ```sh
 docker run --rm \
@@ -96,9 +91,9 @@ docker run --rm \
   alpine tar czf /backup/pwndrop-data-backup.tgz -C /data .
 ```
 
-To reset the instance completely, stop the stack, remove `pwndrop-data`, and
-run `make init` again after deliberately removing the local `.env` and
-`config.toml` files. This permanently deletes all uploaded files and accounts.
+To reset Pwndrop completely, run `make down`, remove `pwndrop-data`, and remove
+`.env` before executing `make init` again. This permanently deletes all files
+and accounts.
 
 ## Development
 
@@ -107,11 +102,10 @@ make build
 make test
 ```
 
-The backend is Go and the browser UI is vendored Vue/Bootstrap assets under
-`www/`; no Node.js build step is required. Go dependencies are vendored, so the
-normal build uses `-mod=vendor`.
+The backend is Go. The browser UI uses vendored Vue/Bootstrap assets under
+`www/`, so no Node.js build step is required.
 
-## Original project and license
+## License
 
-This is a private derivative of [kgretzky/pwndrop](https://github.com/kgretzky/pwndrop).
-The original project is licensed under GPL-3.0; see [LICENSE](LICENSE).
+This is a derivative of [kgretzky/pwndrop](https://github.com/kgretzky/pwndrop),
+which is licensed under GPL-3.0. See [LICENSE](LICENSE).

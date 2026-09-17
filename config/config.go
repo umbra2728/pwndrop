@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pelletier/go-toml"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/kgretzky/pwndrop/log"
@@ -16,263 +15,177 @@ import (
 )
 
 const (
-	INI_SERVER         = "pwndrop"
-	INI_VAR_LISTEN_IP  = "listen_ip"
-	INI_VAR_HTTP_PORT  = "http_port"
-	INI_VAR_HTTPS_PORT = "https_port"
-	INI_VAR_DATA_DIR   = "data_dir"
-	INI_VAR_ADMIN_DIR  = "admin_dir"
+	EnvListenIP  = "PWN_DROP_LISTEN_IP"
+	EnvHTTPPort  = "PWN_DROP_HTTP_PORT"
+	EnvHTTPSPort = "PWN_DROP_HTTPS_PORT"
+	EnvDataDir   = "PWN_DROP_DATA_DIR"
+	EnvAdminDir  = "PWN_DROP_ADMIN_DIR"
 
-	INI_SETUP              = "setup"
-	INI_SETUP_USERNAME     = "username"
-	INI_SETUP_PASSWORD     = "password"
-	INI_SETUP_REDIRECT_URL = "redirect_url"
-	INI_SETUP_SECRET_PATH  = "secret_path"
+	EnvSetupUsername    = "PWN_DROP_SETUP_USERNAME"
+	EnvSetupPassword    = "PWN_DROP_SETUP_PASSWORD"
+	EnvSetupRedirectURL = "PWN_DROP_SETUP_REDIRECT_URL"
+	EnvSetupSecretPath  = "PWN_DROP_SETUP_SECRET_PATH"
 )
 
-type serverConfig struct {
-	ListenIP  string `toml:"listen_ip"`
-	HTTPPort  int    `toml:"http_port"`
-	HTTPSPort int    `toml:"https_port"`
-	DataDir   string `toml:"data_dir"`
-	AdminDir  string `toml:"admin_dir"`
+type Config struct {
+	listenIP  string
+	httpPort  int
+	httpsPort int
+	dataDir   string
+	adminDir  string
+	execDir   string
 }
 
 type setupConfig struct {
-	Username    string `toml:"username"`
-	Password    string `toml:"password"`
-	RedirectURL string `toml:"redirect_url"`
-	SecretPath  string `toml:"secret_path"`
+	username    string
+	password    string
+	redirectURL string
+	secretPath  string
 }
 
-type fileConfig struct {
-	Pwndrop serverConfig `toml:"pwndrop"`
-	Setup   *setupConfig `toml:"setup,omitempty"`
-}
-
-type Config struct {
-	file    fileConfig
-	path    string
-	execDir string
-	dirty   bool
-}
-
-func NewConfig(path string) (*Config, error) {
-	c := &Config{
-		path:    path,
-		execDir: utils.GetExecDir(),
-		file: fileConfig{Pwndrop: serverConfig{
-			ListenIP:  "",
-			HTTPPort:  80,
-			HTTPSPort: 443,
-			DataDir:   filepath.Join(utils.GetExecDir(), "data"),
-			AdminDir:  filepath.Join(utils.GetExecDir(), "admin"),
-		}},
-	}
-
-	tree, err := toml.LoadFile(path)
+// NewConfig reads all runtime settings from environment variables. Docker
+// Compose supplies them from .env; no configuration file is read or created.
+func NewConfig() (*Config, error) {
+	execDir := utils.GetExecDir()
+	httpPort, err := getPort(EnvHTTPPort, 8080, false)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("read TOML config: %w", err)
-		}
-		log.Warning("config file not found at path: %s", path)
-		c.dirty = true
-		return c, nil
+		return nil, err
 	}
-	if err := tree.Unmarshal(&c.file); err != nil {
-		return nil, fmt.Errorf("parse TOML config: %w", err)
+	httpsPort, err := getPort(EnvHTTPSPort, 0, true)
+	if err != nil {
+		return nil, err
 	}
-	c.applyDefaults()
-	return c, nil
+
+	return &Config{
+		listenIP:  envOrDefault(EnvListenIP, ""),
+		httpPort:  httpPort,
+		httpsPort: httpsPort,
+		dataDir:   envOrDefault(EnvDataDir, filepath.Join(execDir, "data")),
+		adminDir:  envOrDefault(EnvAdminDir, filepath.Join(execDir, "admin")),
+		execDir:   execDir,
+	}, nil
 }
 
-func (c *Config) applyDefaults() {
-	if c.file.Pwndrop.HTTPPort == 0 {
-		c.file.Pwndrop.HTTPPort = 80
+func getPort(key string, fallback int, allowZero bool) (int, error) {
+	value := envOrDefault(key, strconv.Itoa(fallback))
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 0 || port > 65535 || (!allowZero && port == 0) {
+		return 0, fmt.Errorf("%s must be a valid port number", key)
 	}
-	if c.file.Pwndrop.DataDir == "" {
-		c.file.Pwndrop.DataDir = filepath.Join(c.execDir, "data")
-	}
-	if c.file.Pwndrop.AdminDir == "" {
-		c.file.Pwndrop.AdminDir = filepath.Join(c.execDir, "admin")
-	}
+	return port, nil
 }
 
-// HandleSetup applies one-time TOML bootstrap values, then environment values.
-// Environment credentials are never persisted to the TOML file and are only used
-// while there are no existing application users.
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// HandleSetup initializes database-backed settings and the first administrator
+// once. Bootstrap variables are ignored after any account exists.
 func (c *Config) HandleSetup() error {
-	if c.file.Setup != nil {
-		if err := c.applySetup(*c.file.Setup); err != nil {
-			return err
-		}
-		c.file.Setup = nil
-		c.dirty = true
+	setup := setupConfig{
+		username:    os.Getenv(EnvSetupUsername),
+		password:    os.Getenv(EnvSetupPassword),
+		redirectURL: os.Getenv(EnvSetupRedirectURL),
+		secretPath:  os.Getenv(EnvSetupSecretPath),
 	}
-
-	envSetup := setupConfig{
-		Username:    os.Getenv("PWN_DROP_SETUP_USERNAME"),
-		Password:    os.Getenv("PWN_DROP_SETUP_PASSWORD"),
-		RedirectURL: os.Getenv("PWN_DROP_SETUP_REDIRECT_URL"),
-		SecretPath:  os.Getenv("PWN_DROP_SETUP_SECRET_PATH"),
-	}
-	if envSetup.Username != "" || envSetup.Password != "" || envSetup.RedirectURL != "" || envSetup.SecretPath != "" {
-		users, err := storage.UserList()
-		if err != nil {
-			return fmt.Errorf("list users for environment setup: %w", err)
-		}
-		if len(users) == 0 {
-			if err := c.applySetup(envSetup); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (c *Config) applySetup(setup setupConfig) error {
-	o, err := storage.ConfigGet(1)
-	if err != nil {
-		return fmt.Errorf("get database config: %w", err)
-	}
-
-	if setup.RedirectURL != "" {
-		o.RedirectUrl = setup.RedirectURL
-		log.Important("setup: redirect URL configured")
-	}
-	if setup.SecretPath != "" {
-		secretPath := setup.SecretPath
-		if !strings.HasPrefix(secretPath, "/") {
-			secretPath = "/" + secretPath
-		}
-		if len(secretPath) > 1 {
-			o.CookieName = utils.GenRandomString(4)
-			o.CookieToken = utils.GenRandomHash()
-			o.SecretPath = secretPath
-			log.Important("setup: secret path configured")
-		}
+	if setup.username == "" && setup.password == "" && setup.redirectURL == "" && setup.secretPath == "" {
+		return nil
 	}
 
 	users, err := storage.UserList()
 	if err != nil {
-		return fmt.Errorf("list users: %w", err)
+		return fmt.Errorf("list users for environment setup: %w", err)
 	}
-	if len(users) == 0 && setup.Username != "" && setup.Password != "" {
-		phash, err := bcrypt.GenerateFromPassword([]byte(setup.Password), bcrypt.DefaultCost)
+	if len(users) > 0 {
+		return nil
+	}
+	return c.applySetup(setup)
+}
+
+func (c *Config) applySetup(setup setupConfig) error {
+	dbConfig, err := storage.ConfigGet(1)
+	if err != nil {
+		return fmt.Errorf("get database config: %w", err)
+	}
+
+	if setup.redirectURL != "" {
+		dbConfig.RedirectUrl = setup.redirectURL
+		log.Important("setup: redirect URL configured")
+	}
+	if setup.secretPath != "" {
+		secretPath := setup.secretPath
+		if !strings.HasPrefix(secretPath, "/") {
+			secretPath = "/" + secretPath
+		}
+		if len(secretPath) > 1 {
+			dbConfig.CookieName = utils.GenRandomString(4)
+			dbConfig.CookieToken = utils.GenRandomHash()
+			dbConfig.SecretPath = secretPath
+			log.Important("setup: secret path configured")
+		}
+	}
+
+	if setup.username != "" && setup.password != "" {
+		passwordHash, err := bcrypt.GenerateFromPassword([]byte(setup.password), bcrypt.DefaultCost)
 		if err != nil {
 			return fmt.Errorf("hash setup password: %w", err)
 		}
-		if _, err := storage.UserCreate(&storage.DbUser{Name: setup.Username, Password: string(phash)}); err != nil {
+		if _, err := storage.UserCreate(&storage.DbUser{Name: setup.username, Password: string(passwordHash)}); err != nil {
 			return fmt.Errorf("create setup user: %w", err)
 		}
 		log.Important("setup: created initial administrator account")
 	}
 
-	if _, err := storage.ConfigUpdate(1, o); err != nil {
+	if _, err := storage.ConfigUpdate(1, dbConfig); err != nil {
 		return fmt.Errorf("save database config: %w", err)
 	}
 	return nil
 }
 
-func (c *Config) Save() error {
-	if !c.dirty {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(c.path), 0700); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
-	}
-	encoded, err := toml.Marshal(c.file)
-	if err != nil {
-		return fmt.Errorf("encode TOML config: %w", err)
-	}
-	if err := os.WriteFile(c.path, encoded, 0600); err != nil {
-		return fmt.Errorf("save TOML config: %w", err)
-	}
-	c.dirty = false
-	return nil
-}
+func (c *Config) GetListenIP() string { return c.listenIP }
+func (c *Config) GetHttpPort() int    { return c.httpPort }
+func (c *Config) GetHttpsPort() int   { return c.httpsPort }
+func (c *Config) GetDataDir() string  { return c.joinPath(c.dataDir) }
+func (c *Config) GetAdminDir() string { return c.joinPath(c.adminDir) }
 
-func (c *Config) GetListenIP() string { return c.file.Pwndrop.ListenIP }
-func (c *Config) GetHttpPort() int    { return c.file.Pwndrop.HTTPPort }
-func (c *Config) GetHttpsPort() int   { return c.file.Pwndrop.HTTPSPort }
 func (c *Config) GetSecretPath() string {
-	o, err := storage.ConfigGet(1)
+	dbConfig, err := storage.ConfigGet(1)
 	if err != nil {
 		return ""
 	}
-	return o.SecretPath
+	return dbConfig.SecretPath
 }
-func (c *Config) GetDataDir() string  { return c.joinPath(c.execDir, c.file.Pwndrop.DataDir) }
-func (c *Config) GetAdminDir() string { return c.joinPath(c.execDir, c.file.Pwndrop.AdminDir) }
+
 func (c *Config) GetCookieName() string {
-	o, err := storage.ConfigGet(1)
+	dbConfig, err := storage.ConfigGet(1)
 	if err != nil {
 		return ""
 	}
-	return o.CookieName
+	return dbConfig.CookieName
 }
+
 func (c *Config) GetCookieToken() string {
-	o, err := storage.ConfigGet(1)
+	dbConfig, err := storage.ConfigGet(1)
 	if err != nil {
 		return ""
 	}
-	return o.CookieToken
+	return dbConfig.CookieToken
 }
+
 func (c *Config) GetRedirectUrl() string {
-	o, err := storage.ConfigGet(1)
+	dbConfig, err := storage.ConfigGet(1)
 	if err != nil {
 		return ""
 	}
-	return o.RedirectUrl
+	return dbConfig.RedirectUrl
 }
 
-func (c *Config) Get(key string) (string, error) {
-	switch key {
-	case INI_VAR_LISTEN_IP:
-		return c.file.Pwndrop.ListenIP, nil
-	case INI_VAR_HTTP_PORT:
-		return strconv.Itoa(c.file.Pwndrop.HTTPPort), nil
-	case INI_VAR_HTTPS_PORT:
-		return strconv.Itoa(c.file.Pwndrop.HTTPSPort), nil
-	case INI_VAR_DATA_DIR:
-		return c.file.Pwndrop.DataDir, nil
-	case INI_VAR_ADMIN_DIR:
-		return c.file.Pwndrop.AdminDir, nil
-	default:
-		return "", fmt.Errorf("config key %q not found", key)
+func (c *Config) joinPath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
 	}
-}
-
-func (c *Config) Set(key string, value string) error {
-	switch key {
-	case INI_VAR_LISTEN_IP:
-		c.file.Pwndrop.ListenIP = value
-	case INI_VAR_HTTP_PORT:
-		port, err := strconv.Atoi(value)
-		if err != nil {
-			return fmt.Errorf("invalid HTTP port: %w", err)
-		}
-		c.file.Pwndrop.HTTPPort = port
-	case INI_VAR_HTTPS_PORT:
-		port, err := strconv.Atoi(value)
-		if err != nil {
-			return fmt.Errorf("invalid HTTPS port: %w", err)
-		}
-		c.file.Pwndrop.HTTPSPort = port
-	case INI_VAR_DATA_DIR:
-		c.file.Pwndrop.DataDir = value
-	case INI_VAR_ADMIN_DIR:
-		c.file.Pwndrop.AdminDir = value
-	default:
-		return fmt.Errorf("config key %q not found", key)
-	}
-	c.dirty = true
-	return c.Save()
-}
-
-func (c *Config) joinPath(basePath string, relPath string) string {
-	if filepath.IsAbs(relPath) {
-		return relPath
-	}
-	return filepath.Join(basePath, relPath)
+	return filepath.Join(c.execDir, path)
 }

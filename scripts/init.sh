@@ -2,12 +2,12 @@
 set -eu
 
 ENV_FILE=${ENV_FILE:-.env}
-CONFIG_FILE=${CONFIG_FILE:-config.toml}
 ADMIN_USERNAME=${PWN_DROP_SETUP_USERNAME:-admin}
+HTTP_PORT=${PWN_DROP_HTTP_PORT:-8080}
 
-if [ -e "$ENV_FILE" ] || [ -e "$CONFIG_FILE" ]; then
-    echo "Refusing to overwrite $ENV_FILE or $CONFIG_FILE." >&2
-    echo "Remove them deliberately before initializing a new instance." >&2
+if [ -e "$ENV_FILE" ]; then
+    echo "Refusing to overwrite $ENV_FILE." >&2
+    echo "Remove it deliberately before initializing a new instance." >&2
     exit 1
 fi
 
@@ -24,22 +24,29 @@ password=$(random_value)
 secret_path="/$(random_value)"
 
 umask 077
-cp config.example.toml "$CONFIG_FILE"
 cat >"$ENV_FILE" <<EOF
+# Pwndrop Compose configuration. This is the only configuration file.
+PWN_DROP_LISTEN_IP=0.0.0.0
+PWN_DROP_HTTP_PORT=$HTTP_PORT
+PWN_DROP_HTTPS_PORT=0
+PWN_DROP_DATA_DIR=/data
+PWN_DROP_ADMIN_DIR=/app/admin
+
 PWN_DROP_SETUP_USERNAME=$ADMIN_USERNAME
 PWN_DROP_SETUP_PASSWORD=$password
 PWN_DROP_SETUP_SECRET_PATH=$secret_path
 PWN_DROP_SETUP_REDIRECT_URL=
 EOF
-chmod 600 "$ENV_FILE" "$CONFIG_FILE"
+chmod 600 "$ENV_FILE"
 
 cat <<EOF
-Initialized Pwndrop configuration.
+Initialized Pwndrop.
 
+Published HTTP port: $HTTP_PORT
 Administrator username: $ADMIN_USERNAME
 Administrator password: $password
 Secret admin URL path: $secret_path
 
-These values are stored in $ENV_FILE (mode 600). Keep it private.
+All configuration is in $ENV_FILE (mode 600). Keep it private.
 Start the service with: docker compose up -d --build
 EOF

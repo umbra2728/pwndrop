@@ -9,10 +9,9 @@ services:
     env_file:
       - .env
     ports:
-      - "8080:8080"
+      - "${PWN_DROP_HTTP_PORT:-8080}:${PWN_DROP_HTTP_PORT:-8080}"
     volumes:
       - pwndrop-data:/data
-      - ./config.toml:/config/config.toml:ro
     read_only: true
     tmpfs:
       - /tmp:mode=1777,noexec,nosuid,size=64m
@@ -33,7 +32,7 @@ services:
         - -q
         - -O
         - "-"
-        - http://127.0.0.1:8080/healthz
+        - http://127.0.0.1:${PWN_DROP_HTTP_PORT:-8080}/healthz
       interval: 30s
       timeout: 5s
       retries: 3

@@ -2,7 +2,6 @@
 .github
 .pi
 .env
-config.toml
 build
 release
 pwndrop

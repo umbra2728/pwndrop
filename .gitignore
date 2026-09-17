@@ -6,6 +6,5 @@ release/
 
 # Local deployment state, generated secrets, and Pi task artifacts
 .env
-config.toml
 data/
 .pi/
